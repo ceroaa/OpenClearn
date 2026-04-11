@@ -2,11 +2,13 @@
 
 Safe, configurable cleanup tooling for AI agent workspaces (Codex / Claude Code / OpenClaw).
 
-## What Is New In v1.1
+## What Is New In v1.2
 
 - `collect` mode: collect cleanup candidates only, no deletion.
 - `review` mode: collect candidates and write a Markdown review report.
 - `delete` mode: delete only approved candidates from an approval file.
+- `system_scan.py`: system-level disk growth scan (top folders + recent large files).
+- `clean_chrome_ai_cache.py`: safe cleanup of Chrome local AI cache folders.
 - Agent profile loading (`codex` / `claude` / `openclaw` / custom JSON).
 - API key binding support via environment variable (`--provider`, `--api-key-env`).
 - Collector context policy:
@@ -27,6 +29,19 @@ Safe, configurable cleanup tooling for AI agent workspaces (Codex / Claude Code 
 ```powershell
 cd tools\g5_scavenger
 python scavenger.py --config config.example.json --mode safe --operation collect
+```
+
+System-level growth scan (last 24h):
+
+```powershell
+python system_scan.py
+python system_scan.py --include-recent-large-files --recent-hours 24 --min-file-mb 200
+```
+
+Chrome local AI cache cleanup:
+
+```powershell
+python clean_chrome_ai_cache.py --kill-chrome
 ```
 
 Generate review report:
@@ -92,6 +107,13 @@ Current v1.1 records provider/key-loaded status in reports for future semantic c
 
 ```powershell
 python patrol.py --config config.example.json --mode balanced --cycles 0 --interval-seconds 1800 --auto-apply --apply-threshold-mb 256
+```
+
+## Windows Shortcuts
+
+```bat
+run_system_scan.bat
+run_clean_chrome_ai_cache.bat
 ```
 
 ## Safety
