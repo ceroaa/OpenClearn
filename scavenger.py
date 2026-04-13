@@ -613,7 +613,7 @@ def build_cleanup_state(
     persona: str,
 ) -> dict:
     return {
-        "version": "v1.1",
+        "version": "v1.3",
         "updated_at": now_iso(),
         "status": "completed",
         "operation": "cleanup",
@@ -755,7 +755,7 @@ def main() -> None:
         all_candidates.sort(key=lambda x: int(x.get("size_bytes", 0)), reverse=True)
         estimated_reclaim = sum(int(c.get("size_bytes", 0)) for c in all_candidates)
         bundle = {
-            "version": "v1.1",
+            "version": "v1.3",
             "generated_at": now_iso(),
             "operation": args.operation,
             "root": str(root),
@@ -791,7 +791,7 @@ def main() -> None:
             write_json(candidates_file, bundle)
 
         state = {
-            "version": "v1.1",
+            "version": "v1.3",
             "updated_at": now_iso(),
             "status": "completed",
             "operation": args.operation,

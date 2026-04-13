@@ -2,7 +2,7 @@
 
 Safe, configurable cleanup tooling for AI agent workspaces (Codex / Claude Code / OpenClaw).
 
-## What Is New In v1.2
+## What Is New In v1.3
 
 - `collect` mode: collect cleanup candidates only, no deletion.
 - `review` mode: collect candidates and write a Markdown review report.
@@ -101,7 +101,12 @@ $env:OPENAI_API_KEY = "sk-..."
 python scavenger.py --config config.example.json --provider openai --api-key-env OPENAI_API_KEY --operation review
 ```
 
-Current v1.1 records provider/key-loaded status in reports for future semantic cleanup extensions.
+Current v1.3 keeps provider/key-loaded status in reports and adds a documented lockfile resolution playbook from production use.
+
+## Case Notes
+
+- 2026-04-13: Added real-world case note for staged destructive devour cleanup and locked-packfile handling.
+- See: `docs/cases/2026-04-13-g5-virus-devour-case.md`
 
 ## Patrol
 
