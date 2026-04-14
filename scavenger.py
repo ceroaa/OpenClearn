@@ -464,6 +464,7 @@ def scan_stale_files(
                 modified = datetime.fromtimestamp(st.st_mtime, tz=TZ)
                 if modified >= cutoff:
                     continue
+                age_days = (now_dt() - modified).days
                 candidates.append(
                     {
                         "candidate_id": f"stale-{uuid.uuid4().hex[:12]}",
@@ -471,6 +472,7 @@ def scan_stale_files(
                         "path": str(file_path.resolve()),
                         "relative_path": rel,
                         "size_bytes": int(st.st_size),
+                        "age_days": age_days,
                         "reason": f"older_than_{stale_days}d",
                         "source": "collector",
                         "context_reason": reason,
@@ -506,21 +508,65 @@ def media_groups_to_candidates(groups: list[dict], root: Path, context: dict) ->
     return candidates
 
 
-def write_review_markdown(path: Path, bundle: dict) -> None:
+def write_review_markdown(path: Path, bundle: dict, max_items: int = 200) -> None:
+    candidates = bundle.get("candidates", [])
     lines: list[str] = []
     lines.append("# OpenClearn Review Report")
     lines.append("")
     lines.append(f"- generated_at: `{bundle.get('generated_at')}`")
     lines.append(f"- root: `{bundle.get('root')}`")
-    lines.append(f"- candidate_count: `{len(bundle.get('candidates', []))}`")
+    lines.append(f"- agent_profile: `{bundle.get('agent_profile')}` / persona: `{bundle.get('agent_persona')}`")
+    lines.append(f"- candidate_count: `{len(candidates)}`")
     lines.append(f"- estimated_reclaim_mb: `{bundle.get('estimated_reclaim_bytes', 0) / 1024 / 1024:.2f}`")
     lines.append("")
-    lines.append("## Top Candidates")
+
+    # Kind summary
+    kind_counts: Counter = Counter(str(c.get("kind", "unknown")) for c in candidates)
+    kind_bytes:  dict[str, int] = {}
+    for c in candidates:
+        k = str(c.get("kind", "unknown"))
+        kind_bytes[k] = kind_bytes.get(k, 0) + int(c.get("size_bytes", 0))
+    lines.append("## Summary by Kind")
     lines.append("")
-    for c in bundle.get("candidates", [])[:100]:
+    lines.append("| Kind | Count | Reclaim |")
+    lines.append("|------|-------|---------|")
+    for kind, count in kind_counts.most_common():
+        mb = kind_bytes.get(kind, 0) / 1024 / 1024
+        lines.append(f"| `{kind}` | {count} | {mb:.2f} MB |")
+    lines.append("")
+
+    # Age distribution for stale artifacts
+    stale = [c for c in candidates if c.get("kind") == "stale_artifact" and "age_days" in c]
+    if stale:
+        buckets = {"<7d": 0, "7-30d": 0, "30-90d": 0, ">90d": 0}
+        for c in stale:
+            age = int(c.get("age_days", 0))
+            if age < 7:
+                buckets["<7d"] += 1
+            elif age < 30:
+                buckets["7-30d"] += 1
+            elif age < 90:
+                buckets["30-90d"] += 1
+            else:
+                buckets[">90d"] += 1
+        lines.append("## Stale File Age Distribution")
+        lines.append("")
+        for bucket, cnt in buckets.items():
+            if cnt:
+                lines.append(f"- `{bucket}`: {cnt} files")
+        lines.append("")
+
+    lines.append(f"## Top Candidates (showing {min(max_items, len(candidates))} of {len(candidates)})")
+    lines.append("")
+    for c in candidates[:max_items]:
+        age_note = f" | age={c['age_days']}d" if "age_days" in c else ""
         lines.append(
-            f"- `{c.get('candidate_id')}` | `{c.get('kind')}` | `{c.get('size_bytes', 0)}` bytes | `{c.get('relative_path')}`"
+            f"- `{c.get('candidate_id')}` | `{c.get('kind')}`"
+            f" | `{c.get('size_bytes', 0):,}` bytes{age_note}"
+            f" | `{c.get('relative_path')}`"
         )
+    if len(candidates) > max_items:
+        lines.append(f"\n_...{len(candidates) - max_items} more candidates not shown. See candidates JSON._")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -613,7 +659,7 @@ def build_cleanup_state(
     persona: str,
 ) -> dict:
     return {
-        "version": "v1.3",
+        "version": "v1.4",
         "updated_at": now_iso(),
         "status": "completed",
         "operation": "cleanup",
@@ -755,7 +801,7 @@ def main() -> None:
         all_candidates.sort(key=lambda x: int(x.get("size_bytes", 0)), reverse=True)
         estimated_reclaim = sum(int(c.get("size_bytes", 0)) for c in all_candidates)
         bundle = {
-            "version": "v1.3",
+            "version": "v1.4",
             "generated_at": now_iso(),
             "operation": args.operation,
             "root": str(root),
@@ -779,19 +825,34 @@ def main() -> None:
 
         delete_result = None
         if args.operation == "delete":
-            delete_result = apply_collector_deletion(
-                bundle=bundle,
-                root=root,
-                approve_file=approve_file,
-                trash_enabled=trash_enabled,
-                trash_dir=trash_dir,
-                hard_delete=bool(args.hard_delete),
-            )
+            if args.dry_run:
+                # dry-run: simulate only, never touch files
+                approved_ids, approved_paths = load_approval_set(approve_file)
+                would_delete = [
+                    c for c in all_candidates
+                    if (str(c.get("candidate_id", "")) in approved_ids
+                        or str(Path(str(c.get("path", ""))).resolve()) in approved_paths)
+                ]
+                delete_result = {
+                    "dry_run": True,
+                    "would_delete_count": len(would_delete),
+                    "would_delete_bytes": sum(int(c.get("size_bytes", 0)) for c in would_delete),
+                    "would_delete": [{"candidate_id": c.get("candidate_id"), "path": c.get("path")} for c in would_delete[:50]],
+                }
+            else:
+                delete_result = apply_collector_deletion(
+                    bundle=bundle,
+                    root=root,
+                    approve_file=approve_file,
+                    trash_enabled=trash_enabled,
+                    trash_dir=trash_dir,
+                    hard_delete=bool(args.hard_delete),
+                )
             bundle["delete_result"] = delete_result
             write_json(candidates_file, bundle)
 
         state = {
-            "version": "v1.3",
+            "version": "v1.4",
             "updated_at": now_iso(),
             "status": "completed",
             "operation": args.operation,

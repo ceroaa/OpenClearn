@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -29,6 +31,33 @@ def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
+@contextmanager
+def patrol_lock(lock_path: Path):
+    """File-based lock to prevent concurrent patrol runs."""
+    if lock_path.exists():
+        try:
+            pid = int(lock_path.read_text().strip())
+            # Check if PID is still alive
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except (OSError, ProcessLookupError):
+                alive = False
+            if alive:
+                raise RuntimeError(f"Another patrol is running (pid={pid}, lock={lock_path})")
+        except ValueError:
+            pass  # corrupt lock file — take over
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(str(os.getpid()))
+    try:
+        yield
+    finally:
+        try:
+            lock_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def run_scavenger(base: Path, config_path: Path, mode: str, operation: str, dry_run: bool) -> tuple[int, dict]:
@@ -63,6 +92,7 @@ def main() -> None:
     parser.add_argument("--auto-apply", action="store_true")
     parser.add_argument("--apply-threshold-mb", type=int, default=256)
     parser.add_argument("--log-file", default="patrol_reports.jsonl")
+    parser.add_argument("--lock-file", default=None, help="Lockfile path to prevent concurrent runs")
     args = parser.parse_args()
 
     base = Path(__file__).resolve().parent
@@ -74,42 +104,71 @@ def main() -> None:
     else:
         config_path = (base / cfg_input).resolve()
     log_path = (base / args.log_file).resolve() if not Path(args.log_file).is_absolute() else Path(args.log_file)
+    lock_path = Path(args.lock_file).resolve() if args.lock_file else base / "patrol.lock"
 
     index = 0
     while True:
         index += 1
-        rc, dry = run_scavenger(base=base, config_path=config_path, mode=args.mode, operation=args.operation, dry_run=True)
-        metrics = dry.get("metrics", {}) if isinstance(dry, dict) else {}
-        reclaim_mb = round(float(metrics.get("estimated_reclaim_bytes", 0)) / 1024 / 1024, 2)
-        should_apply = bool(args.auto_apply and reclaim_mb >= float(args.apply_threshold_mb))
+        try:
+            with patrol_lock(lock_path):
+                rc, dry = run_scavenger(base=base, config_path=config_path, mode=args.mode, operation=args.operation, dry_run=True)
+                metrics = dry.get("metrics", {}) if isinstance(dry, dict) else {}
+                collector = dry.get("collector", {}) if isinstance(dry, dict) else {}
+                reclaim_bytes = float(
+                    metrics.get("estimated_reclaim_bytes", 0)
+                    or collector.get("estimated_reclaim_bytes", 0)
+                )
+                reclaim_mb = round(reclaim_bytes / 1024 / 1024, 2)
+                threshold_ok = reclaim_mb >= float(args.apply_threshold_mb)
+                should_apply = bool(args.auto_apply and threshold_ok and rc == 0)
+                skip_reason = None
+                if not should_apply:
+                    if not args.auto_apply:
+                        skip_reason = "auto_apply_disabled"
+                    elif not threshold_ok:
+                        skip_reason = f"below_threshold:{reclaim_mb:.1f}MB<{args.apply_threshold_mb}MB"
+                    elif rc != 0:
+                        skip_reason = f"dry_run_failed:rc={rc}"
 
-        applied = None
-        if should_apply and rc == 0:
-            arc, applied_payload = run_scavenger(
-                base=base,
-                config_path=config_path,
-                mode=args.mode,
-                operation=args.operation,
-                dry_run=False,
-            )
-            applied = {"returncode": arc, "payload": applied_payload}
+                applied = None
+                if should_apply:
+                    arc, applied_payload = run_scavenger(
+                        base=base,
+                        config_path=config_path,
+                        mode=args.mode,
+                        operation=args.operation,
+                        dry_run=False,
+                    )
+                    applied = {"returncode": arc, "payload": applied_payload}
 
-        event = {
-            "timestamp": now_iso(),
-            "runner": "patrol.py",
-            "cycle_index": index,
-            "mode": args.mode,
-            "operation": args.operation,
-            "dry_run_returncode": rc,
-            "estimated_reclaim_mb": reclaim_mb,
-            "auto_apply": args.auto_apply,
-            "apply_threshold_mb": args.apply_threshold_mb,
-            "should_apply": should_apply,
-            "dry_run_payload": dry,
-            "applied": applied,
-        }
-        append_jsonl(log_path, event)
-        print(json.dumps(event, ensure_ascii=False))
+                event = {
+                    "timestamp": now_iso(),
+                    "runner": "patrol.py",
+                    "cycle_index": index,
+                    "mode": args.mode,
+                    "operation": args.operation,
+                    "dry_run_returncode": rc,
+                    "estimated_reclaim_mb": reclaim_mb,
+                    "auto_apply": args.auto_apply,
+                    "apply_threshold_mb": args.apply_threshold_mb,
+                    "should_apply": should_apply,
+                    "skip_reason": skip_reason,
+                    "dry_run_payload": dry,
+                    "applied": applied,
+                }
+                append_jsonl(log_path, event)
+                print(json.dumps(event, ensure_ascii=False))
+
+        except RuntimeError as lock_err:
+            event = {
+                "timestamp": now_iso(),
+                "runner": "patrol.py",
+                "cycle_index": index,
+                "status": "skipped_locked",
+                "reason": str(lock_err),
+            }
+            append_jsonl(log_path, event)
+            print(json.dumps(event, ensure_ascii=False))
 
         if args.cycles > 0 and index >= args.cycles:
             break
