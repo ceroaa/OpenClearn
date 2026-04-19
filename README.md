@@ -2,13 +2,16 @@
 
 Safe, configurable cleanup tooling for AI agent workspaces (Codex / Claude Code / OpenClaw).
 
-## What Is New In v1.3
+## What Is New In v1.5
 
 - `collect` mode: collect cleanup candidates only, no deletion.
 - `review` mode: collect candidates and write a Markdown review report.
 - `delete` mode: delete only approved candidates from an approval file.
 - `system_scan.py`: system-level disk growth scan (top folders + recent large files).
 - `clean_chrome_ai_cache.py`: safe cleanup of Chrome local AI cache folders.
+- `doc_cleanup`: document-quality scan for:
+  - `garbled_document` candidates (mojibake/encoding-noise text files)
+  - `exact_duplicate_document` candidates (hash-verified duplicates)
 - Agent profile loading (`codex` / `claude` / `openclaw` / custom JSON).
 - API key binding support via environment variable (`--provider`, `--api-key-env`).
 - Collector context policy:
@@ -102,6 +105,8 @@ python scavenger.py --config config.example.json --provider openai --api-key-env
 ```
 
 Current v1.3 keeps provider/key-loaded status in reports and adds a documented lockfile resolution playbook from production use.
+
+v1.5 adds desktop/documents oriented document cleanup signals so G5 can ingest cleanup strategy and quality gates as reusable operational patterns.
 
 ## Case Notes
 

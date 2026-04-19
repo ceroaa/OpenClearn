@@ -2,6 +2,14 @@
 
 All notable changes to OpenClearn are documented in this file.
 
+## v1.5.0 - 2026-04-20
+
+- feat: add `doc_cleanup` scanner in collect/review/delete pipeline.
+- feat: detect `garbled_document` candidates from text files (encoding noise/mojibake patterns).
+- feat: detect `exact_duplicate_document` candidates (size + hash verified).
+- feat: include document scan metrics in candidate bundle and state report.
+- docs: update README and config example with `doc_cleanup` section.
+
 ## v1.4.0 - 2026-04-14
 
 - fix: `delete` operation now respects `--dry-run` flag — previously dry-run was silently ignored and files were actually deleted.

@@ -57,6 +57,22 @@ DEFAULT_COLLECTOR_PATTERNS = [
     "*.log",
     "*.cache",
 ]
+DEFAULT_DOC_EXTENSIONS = [
+    ".txt",
+    ".md",
+    ".json",
+    ".jsonl",
+    ".csv",
+    ".yaml",
+    ".yml",
+    ".log",
+    ".ini",
+    ".toml",
+    ".pdf",
+    ".docx",
+    ".xlsx",
+    ".pptx",
+]
 BUILTIN_AGENT_PROFILES = {
     "codex": {
         "persona": "pragmatic_cleaner",
@@ -205,6 +221,130 @@ def hash_file(path: Path) -> str:
                 break
             digest.update(block)
     return digest.hexdigest()
+
+
+def looks_garbled_text(text: str) -> bool:
+    t = str(text or "").strip()
+    if not t:
+        return False
+    if "\ufffd" in t:
+        return True
+    if t.count("??") >= 2:
+        return True
+    allowed = 0
+    total = 0
+    for ch in t:
+        total += 1
+        if (
+            ch.isascii() and (ch.isalnum() or ch.isspace() or ch in ",.:;!?/()[]{}-_+'\"")
+        ) or ("\u4e00" <= ch <= "\u9fff"):
+            allowed += 1
+    ratio = allowed / max(1, total)
+    return ratio < 0.8
+
+
+def scan_document_candidates(
+    root: Path,
+    doc_cfg: dict,
+    exclude_patterns: list[str],
+    context: dict,
+) -> tuple[list[dict], list[dict], int]:
+    if not bool(doc_cfg.get("enabled", False)):
+        return [], [], 0
+    roots = [resolve_path(root, str(x)) for x in doc_cfg.get("roots", ["Desktop", "Documents"])]
+    exts = [str(x).lower() for x in doc_cfg.get("extensions", DEFAULT_DOC_EXTENSIONS)]
+    ext_set = {e if e.startswith(".") else f".{e}" for e in exts}
+    min_size_bytes = int(doc_cfg.get("min_size_kb", 1)) * 1024
+    max_hash_bytes = int(doc_cfg.get("max_hash_mb", 32)) * 1024 * 1024
+    max_text_scan_bytes = int(doc_cfg.get("max_text_scan_kb", 256)) * 1024
+    text_exts = {".txt", ".md", ".json", ".jsonl", ".csv", ".yaml", ".yml", ".log", ".ini", ".toml"}
+
+    garbled_candidates: list[dict] = []
+    dup_candidates: list[dict] = []
+    by_size: dict[int, list[Path]] = {}
+
+    for scan_root in roots:
+        if not scan_root.exists():
+            continue
+        for dirpath, _, filenames in os.walk(scan_root):
+            for name in filenames:
+                p = Path(dirpath) / name
+                if p.suffix.lower() not in ext_set:
+                    continue
+                rel = safe_relative(p, root)
+                if should_exclude_path(rel, exclude_patterns):
+                    continue
+                allowed, reason = context_allows_file(p, root, context)
+                if not allowed:
+                    continue
+                try:
+                    st = p.stat()
+                except Exception:
+                    continue
+                size = int(st.st_size)
+                if size < min_size_bytes:
+                    continue
+                by_size.setdefault(size, []).append(p)
+
+                if p.suffix.lower() in text_exts:
+                    try:
+                        with p.open("rb") as fh:
+                            raw = fh.read(max_text_scan_bytes)
+                        text = raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    if looks_garbled_text(text):
+                        garbled_candidates.append(
+                            {
+                                "candidate_id": f"garbled-{uuid.uuid4().hex[:12]}",
+                                "kind": "garbled_document",
+                                "path": str(p.resolve()),
+                                "relative_path": rel,
+                                "size_bytes": size,
+                                "reason": "garbled_text_pattern",
+                                "source": "doc_scan",
+                                "context_reason": reason,
+                            }
+                        )
+
+    for size, files in by_size.items():
+        if len(files) < 2:
+            continue
+        # keep hashing bounded for very large files
+        hashable = [p for p in files if p.exists() and p.stat().st_size <= max_hash_bytes]
+        if len(hashable) < 2:
+            continue
+        by_hash: dict[str, list[Path]] = {}
+        for p in hashable:
+            try:
+                h = hash_file(p)
+            except Exception:
+                continue
+            by_hash.setdefault(h, []).append(p)
+        for _, same in by_hash.items():
+            if len(same) < 2:
+                continue
+            ordered = sorted(same, key=lambda x: x.stat().st_mtime)
+            keep = ordered[0]
+            group_id = f"dupdoc-{uuid.uuid4().hex[:10]}"
+            for p in ordered[1:]:
+                allowed, reason = context_allows_file(p, root, context)
+                if not allowed:
+                    continue
+                dup_candidates.append(
+                    {
+                        "candidate_id": f"{group_id}-{uuid.uuid4().hex[:8]}",
+                        "kind": "exact_duplicate_document",
+                        "path": str(p.resolve()),
+                        "relative_path": safe_relative(p, root),
+                        "size_bytes": size,
+                        "reason": f"duplicate_of:{keep}",
+                        "source": "doc_scan",
+                        "context_reason": reason,
+                    }
+                )
+    reclaimable = sum(int(c.get("size_bytes", 0)) for c in dup_candidates)
+    return garbled_candidates, dup_candidates, reclaimable
 
 
 def scan_media_duplicates(
@@ -659,7 +799,7 @@ def build_cleanup_state(
     persona: str,
 ) -> dict:
     return {
-        "version": "v1.4",
+        "version": "v1.5",
         "updated_at": now_iso(),
         "status": "completed",
         "operation": "cleanup",
@@ -797,11 +937,18 @@ def main() -> None:
             )
         duplicate_candidates = media_groups_to_candidates(media_groups, root, collector_context)
         stale_candidates = scan_stale_files(root, collector_cfg, exclude_patterns, collector_context)
-        all_candidates = duplicate_candidates + stale_candidates
+        doc_cfg = dict(config.get("doc_cleanup", {}))
+        garbled_doc_candidates, dup_doc_candidates, doc_reclaimable = scan_document_candidates(
+            root=root,
+            doc_cfg=doc_cfg,
+            exclude_patterns=exclude_patterns,
+            context=collector_context,
+        )
+        all_candidates = duplicate_candidates + stale_candidates + garbled_doc_candidates + dup_doc_candidates
         all_candidates.sort(key=lambda x: int(x.get("size_bytes", 0)), reverse=True)
         estimated_reclaim = sum(int(c.get("size_bytes", 0)) for c in all_candidates)
         bundle = {
-            "version": "v1.4",
+            "version": "v1.5",
             "generated_at": now_iso(),
             "operation": args.operation,
             "root": str(root),
@@ -817,6 +964,12 @@ def main() -> None:
             },
             "candidate_count": len(all_candidates),
             "estimated_reclaim_bytes": estimated_reclaim,
+            "doc_scan": {
+                "enabled": bool(doc_cfg.get("enabled", False)),
+                "garbled_count": len(garbled_doc_candidates),
+                "duplicate_count": len(dup_doc_candidates),
+                "duplicate_reclaimable_bytes": doc_reclaimable,
+            },
             "candidates": all_candidates,
         }
         write_json(candidates_file, bundle)
@@ -852,7 +1005,7 @@ def main() -> None:
             write_json(candidates_file, bundle)
 
         state = {
-            "version": "v1.4",
+            "version": "v1.5",
             "updated_at": now_iso(),
             "status": "completed",
             "operation": args.operation,
@@ -872,6 +1025,9 @@ def main() -> None:
                 "context_principles": collector_context.get("principles", []),
                 "candidate_count": len(all_candidates),
                 "estimated_reclaim_bytes": estimated_reclaim,
+                "doc_scan_enabled": bool(doc_cfg.get("enabled", False)),
+                "doc_garbled_count": len(garbled_doc_candidates),
+                "doc_duplicate_count": len(dup_doc_candidates),
             },
             "delete_result": delete_result,
         }

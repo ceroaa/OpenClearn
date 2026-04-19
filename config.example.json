@@ -93,5 +93,31 @@
       "state/*.json",
       "state/*.jsonl"
     ]
+  },
+  "doc_cleanup": {
+    "enabled": true,
+    "roots": [
+      "C:/Users/Administrator/Desktop",
+      "C:/Users/Administrator/Documents"
+    ],
+    "extensions": [
+      ".txt",
+      ".md",
+      ".json",
+      ".jsonl",
+      ".csv",
+      ".yaml",
+      ".yml",
+      ".log",
+      ".ini",
+      ".toml",
+      ".pdf",
+      ".docx",
+      ".xlsx",
+      ".pptx"
+    ],
+    "min_size_kb": 1,
+    "max_hash_mb": 32,
+    "max_text_scan_kb": 256
   }
 }
