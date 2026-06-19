@@ -2,6 +2,22 @@
 
 All notable changes to OpenClearn are documented in this file.
 
+## v1.8.0 - 2026-06-19
+
+- feat: `system_scan` now classifies **reclaimable space**, not just largest folders. Two
+  experience-driven categories (from real long-running agent-workspace cleanups):
+  - `regenerable_cache` — caches that rebuild on next use (npm/pip/yarn/pnpm, INetCache,
+    Windows Temp, SoftwareDistribution\Download). Marked `safety: safe`.
+  - `stale_backup` — superseded snapshots/backups (`*.pre-migration`, `*.bak_*`,
+    `*.backup-*`, `*.old`, `*.clobbered*`, ...). Marked `safety: review` (verify it is not
+    the live copy before clearing). In practice a single forgotten pre-migration backup is
+    often the biggest single reclaimable item on disk.
+- feat: report gains a `reclaimable_candidates` block with a `summary`
+  (`reclaimable_cache_gb` / `reclaimable_backup_gb` / `reclaimable_total_gb`).
+- feat: flags `--no-reclaimable` and `--backup-scan-depth N`.
+- note: still strictly read-only — the classifier only sizes and recommends; deletion stays
+  in the guarded `delete` flow.
+
 ## v1.7.0 - 2026-05-07
 
 - feat: add Python packaging metadata for `pipx` / `pip` installs.

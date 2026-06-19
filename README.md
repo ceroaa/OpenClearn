@@ -20,6 +20,22 @@ python -m pip install git+https://github.com/ceroaa/OpenClearn.git
 openclearn --version
 ```
 
+## What Is New In v1.8
+
+- `system_scan` now **classifies reclaimable space**, not just the largest folders — built
+  from real long-running agent-workspace cleanups where the biggest wins are predictable:
+  - `regenerable_cache` — caches that rebuild themselves on next use (npm / pip / yarn / pnpm,
+    `INetCache`, Windows `Temp`, `SoftwareDistribution\Download`). `safety: safe`.
+  - `stale_backup` — superseded snapshots/backups (`*.pre-migration`, `*.bak_*`, `*.backup-*`,
+    `*.old`, `*.clobbered*`, ...). `safety: review` — a single forgotten pre-migration backup
+    is often the largest single reclaimable item on disk. Verify it is not the live copy first.
+  - report block `reclaimable_candidates` with a `summary`
+    (`reclaimable_cache_gb` / `reclaimable_backup_gb` / `reclaimable_total_gb`).
+  - curated, pruned, shallow backup scan (skips `node_modules`, `.git`, `site-packages`,
+    program/model trees) so it stays fast instead of walking all of `AppData`.
+  - flags: `--no-reclaimable`, `--backup-scan-depth N`.
+  - still strictly read-only: it only sizes and recommends; deletion stays in the guarded flow.
+
 ## What Is New In v1.7
 
 - installable command-line package via `pipx` / `pip`.
